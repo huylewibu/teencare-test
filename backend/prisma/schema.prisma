@@ -1,0 +1,89 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Parent {
+  id       Int       @id @default(autoincrement())
+  name     String
+  phone    String
+  email    String    @unique
+  students Student[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Student {
+  id               Int                  @id @default(autoincrement())
+  name             String
+  dob              DateTime
+  gender           String
+  currentGrade     String               @map("current_grade")
+  parentId         Int                  @map("parent_id")
+  parent           Parent               @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  subscriptions    Subscription[]
+  registrations    ClassRegistration[]
+
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+}
+
+model Class {
+  id              Int                  @id @default(autoincrement())
+  name            String
+  subject         String
+  dayOfWeek       String               @map("day_of_week")
+  timeSlot        String               @map("time_slot")
+  teacherName     String               @map("teacher_name")
+  maxStudents     Int                  @map("max_students")
+  startAt         DateTime?
+  registrations   ClassRegistration[]
+
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+}
+
+model ClassRegistration {
+  id            Int        @id @default(autoincrement())
+  classId       Int        @map("class_id")
+  studentId     Int        @map("student_id")
+  subscriptionId Int?      @map("subscription_id")
+
+  class         Class      @relation(fields: [classId], references: [id], onDelete: Cascade)
+  student       Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subscription  Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([classId, studentId])
+}
+
+model Subscription {
+  id             Int        @id @default(autoincrement())
+  studentId      Int        @map("student_id")
+  student        Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  packageName    String     @map("package_name")
+  startDate      DateTime   @map("start_date")
+  endDate        DateTime   @map("end_date")
+  totalSessions  Int        @map("total_sessions")
+  usedSessions   Int        @default(0) @map("used_sessions")
+
+  registrations  ClassRegistration[]
+
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+}
