@@ -2,21 +2,22 @@
 
 A mini web application for managing Parents, Students, Classes, Class Registrations, and Subscriptions.
 
-## Project Structure
 
-```text
-test-teencare/
-  backend/              # Express + TypeScript + Prisma API
-  frontend/             # Next.js UI
-  docker-compose.yml    # Run backend + frontend + PostgreSQL together
-  README.md
-  
 ## Tech Stack
 
 - Backend: Express.js + TypeScript + Prisma
 - Frontend: Next.js + React + Tailwind CSS
 - Database: PostgreSQL
 - DevOps: Docker + Docker Compose
+
+
+## Project Structure
+
+test-teencare/
+  backend/              # Express + TypeScript + Prisma API
+  frontend/             # Next.js frontend
+  docker-compose.yml    # Runs backend + frontend + PostgreSQL together
+  README.md
 
 ## Features
 
