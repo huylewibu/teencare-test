@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../lib/prisma";
 import { Prisma } from "@prisma/client";
+import { getNextOccurrence } from "../utils/nextOccurrenceAt";
 
 function parseTimeRange(timeSlot: string) {
   const [start, end] = timeSlot.split("-").map((s) => s.trim());
@@ -22,6 +23,12 @@ function isOverlap(slotA: string, slotB: string) {
   const bEnd = timeToMinutes(b.end);
 
   return aStart < bEnd && bStart < aEnd;
+}
+
+function addDays(date: Date, days: number) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
 }
 
 export const AppController = {
@@ -64,12 +71,42 @@ export const AppController = {
     }
   },
 
+  async getParents(req: Request, res: Response) {
+    try {
+      const parents = await prisma.parent.findMany({
+        orderBy: { id: "desc" },
+      });
+
+      return res.json(parents);
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+  },
+
+  async getStudents(req: Request, res: Response) {
+    try {
+      const students = await prisma.student.findMany({
+        include: {
+          parent: true,
+        },
+        orderBy: { id: "desc" },
+      });
+
+      return res.json(students);
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+  },
+
   async createStudent(req: Request, res: Response) {
     try {
       const { name, dob, gender, current_grade, parent_id } = req.body;
 
       if (!name || !dob || !gender || !current_grade || !parent_id) {
-        return res.status(400).json({ message: "Missing required student fields" });
+        return res.status(400).json({
+          message:
+            "Missing required student fields: name, dob, gender, current_grade, parent_id",
+        });
       }
 
       const parent = await prisma.parent.findUnique({
@@ -107,10 +144,25 @@ export const AppController = {
         where: { id },
         include: {
           parent: true,
-          subscriptions: true,
+          subscriptions: {
+            include: {
+              subscriptionPlan: true,
+            },
+            orderBy: {
+              id: "desc",
+            },
+          },
           registrations: {
             include: {
               class: true,
+              studentSubscription: {
+                include: {
+                  subscriptionPlan: true,
+                },
+              },
+            },
+            orderBy: {
+              id: "desc",
             },
           },
         },
@@ -135,7 +187,6 @@ export const AppController = {
         time_slot,
         teacher_name,
         max_students,
-        start_at,
       } = req.body;
 
       if (!name || !subject || !day_of_week || !time_slot || !teacher_name || !max_students) {
@@ -150,7 +201,6 @@ export const AppController = {
           timeSlot: time_slot,
           teacherName: teacher_name,
           maxStudents: Number(max_students),
-          startAt: start_at ? new Date(start_at) : null,
         },
       });
 
@@ -173,31 +223,83 @@ export const AppController = {
             },
           },
         },
-        orderBy: [
-          { dayOfWeek: "asc" },
-          { timeSlot: "asc" },
-        ],
+        orderBy: [{ dayOfWeek: "asc" }, { timeSlot: "asc" }],
       });
 
-      return res.json(classes);
+      const mapped = classes.map((item) => ({
+        ...item,
+        registered_count: item.registrations.length,
+      }));
+
+      return res.json(mapped);
     } catch (error: any) {
       return res.status(400).json({ message: error.message });
     }
   },
 
-  async createSubscription(req: Request, res: Response) {
+  async createSubscriptionPlan(req: Request, res: Response) {
     try {
-      const {
-        student_id,
-        package_name,
-        start_date,
-        end_date,
-        total_sessions,
-        used_sessions,
-      } = req.body;
+      const { name, total_sessions, duration_days, is_active } = req.body;
 
-      if (!student_id || !package_name || !start_date || !end_date || !total_sessions) {
-        return res.status(400).json({ message: "Missing required subscription fields" });
+      if (!name || !total_sessions || !duration_days) {
+        return res.status(400).json({
+          message: "Missing required subscription plan fields",
+        });
+      }
+
+      const plan = await prisma.subscriptionPlan.create({
+        data: {
+          name,
+          totalSessions: Number(total_sessions),
+          durationDays: Number(duration_days),
+          isActive: is_active == null ? true : Boolean(is_active),
+        },
+      });
+
+      return res.status(201).json(plan);
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+  },
+
+  async getSubscriptionPlans(req: Request, res: Response) {
+    try {
+      const plans = await prisma.subscriptionPlan.findMany({
+        orderBy: { id: "desc" },
+      });
+
+      return res.json(plans);
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+  },
+
+  async getSubscriptionPlanById(req: Request, res: Response) {
+    try {
+      const id = Number(req.params.id);
+
+      const plan = await prisma.subscriptionPlan.findUnique({
+        where: { id },
+      });
+
+      if (!plan) {
+        return res.status(404).json({ message: "Subscription plan not found" });
+      }
+
+      return res.json(plan);
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+  },
+
+  async createStudentSubscription(req: Request, res: Response) {
+    try {
+      const { student_id, subscription_plan_id, start_date } = req.body;
+
+      if (!student_id || !subscription_plan_id || !start_date) {
+        return res.status(400).json({
+          message: "Missing required student subscription fields",
+        });
       }
 
       const student = await prisma.student.findUnique({
@@ -208,14 +310,33 @@ export const AppController = {
         return res.status(404).json({ message: "Student not found" });
       }
 
-      const subscription = await prisma.subscription.create({
+      const plan = await prisma.subscriptionPlan.findUnique({
+        where: { id: Number(subscription_plan_id) },
+      });
+
+      if (!plan) {
+        return res.status(404).json({ message: "Subscription plan not found" });
+      }
+
+      if (!plan.isActive) {
+        return res.status(400).json({ message: "Subscription plan is inactive" });
+      }
+
+      const startDate = new Date(start_date);
+      const endDate = addDays(startDate, plan.durationDays);
+
+      const subscription = await prisma.studentSubscription.create({
         data: {
           studentId: Number(student_id),
-          packageName: package_name,
-          startDate: new Date(start_date),
-          endDate: new Date(end_date),
-          totalSessions: Number(total_sessions),
-          usedSessions: Number(used_sessions || 0),
+          subscriptionPlanId: Number(subscription_plan_id),
+          startDate,
+          endDate,
+          totalSessionsSnapshot: plan.totalSessions,
+          usedSessions: 0,
+        },
+        include: {
+          student: true,
+          subscriptionPlan: true,
         },
       });
 
@@ -225,19 +346,24 @@ export const AppController = {
     }
   },
 
-  async getSubscriptionById(req: Request, res: Response) {
+  async getStudentSubscriptionById(req: Request, res: Response) {
     try {
       const id = Number(req.params.id);
 
-      const subscription = await prisma.subscription.findUnique({
+      const subscription = await prisma.studentSubscription.findUnique({
         where: { id },
         include: {
-          student: true,
+          student: {
+            include: {
+              parent: true,
+            },
+          },
+          subscriptionPlan: true,
         },
       });
 
       if (!subscription) {
-        return res.status(404).json({ message: "Subscription not found" });
+        return res.status(404).json({ message: "Student subscription not found" });
       }
 
       return res.json(subscription);
@@ -246,34 +372,60 @@ export const AppController = {
     }
   },
 
-  async useSubscriptionSession(req: Request, res: Response) {
+  async useStudentSubscriptionSession(req: Request, res: Response) {
     try {
       const id = Number(req.params.id);
 
-      const subscription = await prisma.subscription.findUnique({
+      const subscription = await prisma.studentSubscription.findUnique({
         where: { id },
       });
 
       if (!subscription) {
-        return res.status(404).json({ message: "Subscription not found" });
+        return res.status(404).json({ message: "Student subscription not found" });
       }
 
-      if (new Date(subscription.endDate) < new Date()) {
-        return res.status(400).json({ message: "Subscription expired" });
+      const now = new Date();
+
+      if (subscription.endDate < now) {
+        return res.status(400).json({ message: "Student subscription expired" });
       }
 
-      if (subscription.usedSessions >= subscription.totalSessions) {
+      if (subscription.usedSessions >= subscription.totalSessionsSnapshot) {
         return res.status(400).json({ message: "No remaining sessions" });
       }
 
-      const updated = await prisma.subscription.update({
+      const updated = await prisma.studentSubscription.update({
         where: { id },
         data: {
           usedSessions: subscription.usedSessions + 1,
         },
+        include: {
+          student: true,
+          subscriptionPlan: true,
+        },
       });
 
       return res.json(updated);
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+  },
+
+  async getStudentSubscriptions(req: Request, res: Response) {
+    try {
+      const subscriptions = await prisma.studentSubscription.findMany({
+        include: {
+          student: {
+            include: {
+              parent: true,
+            },
+          },
+          subscriptionPlan: true,
+        },
+        orderBy: { id: "desc" },
+      });
+
+      return res.json(subscriptions);
     } catch (error: any) {
       return res.status(400).json({ message: error.message });
     }
@@ -285,7 +437,9 @@ export const AppController = {
       const { student_id } = req.body;
 
       if (!student_id) {
-        return res.status(400).json({ message: "student_id is required" });
+        return res.status(400).json({
+          message: "student_id is required",
+        });
       }
 
       const cls = await prisma.class.findUnique({
@@ -319,8 +473,12 @@ export const AppController = {
       });
 
       if (existingRegistration) {
-        return res.status(400).json({ message: "Student already registered in this class" });
+        return res.status(400).json({
+          message: "Student already registered in this class",
+        });
       }
+
+      const nextOccurrenceAt = getNextOccurrence(cls.dayOfWeek, cls.timeSlot);
 
       const studentRegistrations = await prisma.classRegistration.findMany({
         where: {
@@ -331,14 +489,9 @@ export const AppController = {
         },
       });
 
-      const hasTimeConflict = studentRegistrations.some((registration: {
-        class: {
-          dayOfWeek: string;
-          timeSlot: string;
-        };
-      }) => {
+      const hasTimeConflict = studentRegistrations.some((registration) => {
         return (
-          registration.class.dayOfWeek === cls.dayOfWeek &&
+          registration.nextOccurrenceAt.getTime() === nextOccurrenceAt.getTime() &&
           isOverlap(registration.class.timeSlot, cls.timeSlot)
         );
       });
@@ -349,26 +502,32 @@ export const AppController = {
         });
       }
 
-      const now = new Date();
-
-      const validSubscription = await prisma.subscription.findFirst({
+      const activeSubscriptions = await prisma.studentSubscription.findMany({
         where: {
           studentId: Number(student_id),
+          startDate: {
+            lte: nextOccurrenceAt,
+          },
           endDate: {
-            gte: now,
+            gte: nextOccurrenceAt,
           },
         },
         orderBy: {
-          endDate: "desc",
+          endDate: "asc",
+        },
+        include: {
+          subscriptionPlan: true,
         },
       });
 
-      if (!validSubscription) {
-        return res.status(400).json({ message: "No valid subscription found" });
-      }
+      const validSubscription = activeSubscriptions.find(
+        (item) => item.usedSessions < item.totalSessionsSnapshot
+      );
 
-      if (validSubscription.usedSessions >= validSubscription.totalSessions) {
-        return res.status(400).json({ message: "Subscription has no remaining sessions" });
+      if (!validSubscription) {
+        return res.status(400).json({
+          message: "No active student subscription with remaining sessions found",
+        });
       }
 
       const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -376,25 +535,34 @@ export const AppController = {
           data: {
             classId,
             studentId: Number(student_id),
-            subscriptionId: validSubscription.id,
+            studentSubscriptionId: validSubscription.id,
+            nextOccurrenceAt,
           },
           include: {
             class: true,
             student: true,
-            subscription: true,
+            studentSubscription: {
+              include: {
+                subscriptionPlan: true,
+              },
+            },
           },
         });
 
-        const updatedSubscription = await tx.subscription.update({
+        const updatedSubscription = await tx.studentSubscription.update({
           where: { id: validSubscription.id },
           data: {
             usedSessions: validSubscription.usedSessions + 1,
           },
+          include: {
+            subscriptionPlan: true,
+          },
         });
 
         return {
+          message: "Registered successfully",
           registration,
-          subscription: updatedSubscription,
+          studentSubscription: updatedSubscription,
         };
       });
 
@@ -407,49 +575,77 @@ export const AppController = {
   async cancelRegistration(req: Request, res: Response) {
     try {
       const id = Number(req.params.id);
-
+  
       const registration = await prisma.classRegistration.findUnique({
         where: { id },
         include: {
           class: true,
-          subscription: true,
+          studentSubscription: true,
         },
       });
-
+  
       if (!registration) {
         return res.status(404).json({ message: "Registration not found" });
       }
-
-      let refundSession = false;
-
-      if (registration.class.startAt) {
-        const diffMs = new Date(registration.class.startAt).getTime() - Date.now();
-        const diffHours = diffMs / (1000 * 60 * 60);
-        refundSession = diffHours > 24;
-      }
-
+  
+      const now = new Date();
+      const diffMs = registration.nextOccurrenceAt.getTime() - now.getTime();
+      const refundSession = diffMs > 24 * 60 * 60 * 1000;
+  
       await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.classRegistration.delete({
           where: { id },
         });
-
-        if (refundSession && registration.subscriptionId && registration.subscription) {
-          const nextUsedSessions = Math.max(registration.subscription.usedSessions - 1, 0);
-
-          await tx.subscription.update({
-            where: { id: registration.subscriptionId },
+  
+        if (
+          refundSession &&
+          registration.studentSubscriptionId &&
+          registration.studentSubscription
+        ) {
+          const nextUsedSessions = Math.max(
+            registration.studentSubscription.usedSessions - 1,
+            0
+          );
+  
+          await tx.studentSubscription.update({
+            where: { id: registration.studentSubscriptionId },
             data: {
               usedSessions: nextUsedSessions,
             },
           });
         }
       });
-
+  
       return res.json({
         message: refundSession
           ? "Registration cancelled and 1 session refunded"
           : "Registration cancelled without refund",
       });
+    } catch (error: any) {
+      return res.status(400).json({ message: error.message });
+    }
+  },
+
+  async getRegistrations(req: Request, res: Response) {
+    try {
+      const registrations = await prisma.classRegistration.findMany({
+        include: {
+          student: {
+            include: {
+              parent: true,
+            },
+          },
+          class: true,
+          studentSubscription: {
+            include: {
+              subscriptionPlan: true,
+            },
+          },
+        },
+        orderBy: { id: "desc" },
+      });
+
+      return res.json(registrations);
     } catch (error: any) {
       return res.status(400).json({ message: error.message });
     }
